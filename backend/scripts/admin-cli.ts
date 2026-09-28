@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import 'dotenv/config';
 import { AdminService } from '../src/lib/admin/service';
 import { db } from '../src/lib/db/client';
 

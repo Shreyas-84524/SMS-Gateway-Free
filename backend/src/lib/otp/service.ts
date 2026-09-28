@@ -81,15 +81,27 @@ export class OtpService {
     const { otp, salt, otpHash } = createOtpPayload(codeLength);
     const expiresAt = new Date(Date.now() + expirySeconds * 1000);
 
-    // 3. Render SMS Message
-    const template =
-      request.template ??
-      project.config.template ??
+    // 3. Render SMS Message from authoritative project configuration
+    const defaultTemplate =
       'Hello Customer, your CivicFix OTP is {OTP} and is valid for the next 5 minutes. Thank you for contributing to a better Mumbai. - Team Civic Sense';
-    const message = template
-      .replace('{OTP}', otp)
-      .replace('{otp}', otp)
-      .replace('{code}', otp);
+
+    const rawTemplate =
+      project.config.sms_template ||
+      project.config.template ||
+      defaultTemplate;
+
+    const expiryMinutes = Math.max(1, Math.round(expirySeconds / 60));
+
+    if (rawTemplate.length > 300) {
+      return { status: 500, body: { error: 'Configured project SMS template exceeds 300 characters' } };
+    }
+
+    const message = rawTemplate
+      .replace(/{OTP}/g, otp)
+      .replace(/{otp}/g, otp)
+      .replace(/{code}/g, otp)
+      .replace(/{EXPIRY_MINUTES}/g, expiryMinutes.toString())
+      .replace(/{PROJECT_NAME}/g, project.name);
 
     // 4. Persist Challenge in DB
     const client = await db.getClient();

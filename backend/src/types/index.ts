@@ -18,6 +18,7 @@ export interface ProjectConfig {
   max_attempts?: number;
   otp_length?: number;
   template?: string;
+  sms_template?: string;
 }
 
 export interface Project {

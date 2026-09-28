@@ -6,9 +6,30 @@ export class JobQueue {
   private static readonly MAX_CLAIM_ATTEMPTS = 3;
 
   /**
-   * Reverts stale CLAIMED jobs whose lease expired back to QUEUED.
+   * Recovers stale CLAIMED jobs and expires queued jobs whose challenges or deadlines have passed.
    */
   public static async recoverStaleLeases(): Promise<number> {
+    // 1. Expire QUEUED jobs whose associated OTP challenges have expired
+    await db.query(
+      `UPDATE sms_jobs sj
+       SET status = 'EXPIRED',
+           failure_reason = 'OTP challenge expired before gateway claim'
+       FROM otp_challenges oc
+       WHERE sj.challenge_id = oc.id
+         AND sj.status = 'QUEUED'
+         AND oc.expires_at <= NOW()`
+    );
+
+    // 2. Expire QUEUED jobs older than 10 minutes (queue timeout)
+    await db.query(
+      `UPDATE sms_jobs
+       SET status = 'EXPIRED',
+           failure_reason = 'SMS job timed out in queue before gateway claim'
+       WHERE status = 'QUEUED'
+         AND created_at <= NOW() - INTERVAL '10 minutes'`
+    );
+
+    // 3. Revert stale CLAIMED jobs whose lease expired back to QUEUED
     const result = await db.query(
       `UPDATE sms_jobs
        SET status = 'QUEUED',
@@ -20,7 +41,7 @@ export class JobQueue {
       [this.MAX_CLAIM_ATTEMPTS]
     );
 
-    // Expire jobs that exceeded max attempts
+    // 4. Expire CLAIMED jobs that exceeded max attempts
     await db.query(
       `UPDATE sms_jobs
        SET status = 'EXPIRED',
@@ -42,22 +63,24 @@ export class JobQueue {
     limit = 1,
     leaseSeconds = this.LEASE_DURATION_SECONDS
   ): Promise<GatewayJobDto[]> {
-    // Run stale lease recovery before claiming
+    // Run stale lease recovery and challenge expiration before claiming
     await this.recoverStaleLeases();
 
     const client = await db.getClient();
     try {
       await client.query('BEGIN');
 
-      // Atomic lock & claim with SKIP LOCKED
+      // Atomic lock & claim with SKIP LOCKED on unexpired QUEUED jobs
       const claimQuery = `
         WITH next_jobs AS (
-          SELECT id
-          FROM sms_jobs
-          WHERE status = 'QUEUED'
-          ORDER BY created_at ASC
+          SELECT sj.id
+          FROM sms_jobs sj
+          LEFT JOIN otp_challenges oc ON sj.challenge_id = oc.id
+          WHERE sj.status = 'QUEUED'
+            AND (oc.id IS NULL OR oc.expires_at > NOW())
+          ORDER BY sj.created_at ASC
           LIMIT $1
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF sj SKIP LOCKED
         )
         UPDATE sms_jobs
         SET status = 'CLAIMED',
