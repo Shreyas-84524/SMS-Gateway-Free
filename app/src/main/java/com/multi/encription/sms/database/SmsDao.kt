@@ -18,6 +18,12 @@ interface SmsDao {
     
     @Query("SELECT * FROM sms_history WHERE requestId = :requestId")
     suspend fun getSmsByRequestId(requestId: String): SmsEntity?
+
+    @Query("SELECT * FROM sms_history WHERE globalJobId = :globalJobId LIMIT 1")
+    suspend fun getSmsByGlobalJobId(globalJobId: String): SmsEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM sms_history WHERE globalJobId = :globalJobId AND status IN ('SENT', 'DELIVERED'))")
+    suspend fun isJobAlreadyProcessed(globalJobId: String): Boolean
     
     @Query("SELECT * FROM sms_history WHERE phoneNumber = :phoneNumber ORDER BY timestamp DESC")
     fun getSmsByPhoneNumber(phoneNumber: String): Flow<List<SmsEntity>>
@@ -31,7 +37,7 @@ interface SmsDao {
     @Query("SELECT * FROM sms_history WHERE timestamp BETWEEN :startTime AND :endTime ORDER BY timestamp DESC")
     fun getSmsByTimeRange(startTime: Long, endTime: Long): Flow<List<SmsEntity>>
     
-    @Insert
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSms(sms: SmsEntity): Long
     
     @Update

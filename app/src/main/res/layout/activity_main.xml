@@ -13,72 +13,249 @@
         android:orientation="vertical"
         android:padding="16dp">
 
-        <!-- Header Section -->
-        <com.google.android.material.card.MaterialCardView
+        <!-- Title -->
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp"
+            android:text="Global OTP Gateway"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Mode Toggle Segmented Group -->
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/modeToggleGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:singleSelection="true"
+            app:selectionRequired="true">
+
+            <Button
+                android:id="@+id/btnModeGlobal"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Global Worker"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+            <Button
+                android:id="@+id/btnModeLocal"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Local API (Legacy)"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <!-- Global Worker Dashboard Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/globalWorkerCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
             app:cardCornerRadius="8dp"
-            app:cardElevation="4dp">
+            app:cardElevation="3dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="14dp">
 
-                <TextView
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/workerToggle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="SMS Gateway"
-                    android:textSize="24sp"
+                    android:text="Enable Global Worker"
                     android:textStyle="bold"
-                    android:gravity="center"
-                    android:layout_marginBottom="16dp" />
+                    android:textSize="16sp"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/workerBackendStatusText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Backend: Checking..."
+                    android:textSize="13sp"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/workerSimStatusText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="SIM Status: READY"
+                    android:textSize="13sp"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/workerLastSyncText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Last Sync: Never"
+                    android:textSize="12sp"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/workerLastJobText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Status: Idle"
+                    android:textSize="12sp"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- Latest Telephony Diagnostics Tile -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/diagnosticsCard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="10dp"
+                    android:visibility="gone"
+                    app:cardElevation="0dp"
+                    app:strokeWidth="1dp"
+                    app:strokeColor="?attr/colorOutlineVariant"
+                    app:cardCornerRadius="6dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="10dp">
+
+                        <TextView
+                            android:id="@+id/diagnosticsTitleText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Latest Telephony Diagnostics"
+                            android:textStyle="bold"
+                            android:textSize="12sp"
+                            android:layout_marginBottom="4dp" />
+
+                        <TextView
+                            android:id="@+id/diagnosticsDetailText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="No errors recorded."
+                            android:fontFamily="monospace"
+                            android:textSize="11sp"
+                            android:textColor="?android:attr/textColorSecondary"
+                            android:layout_marginBottom="4dp" />
+
+                        <Button
+                            android:id="@+id/btnCopyDiagnostics"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Copy Diagnostics"
+                            android:textSize="11sp"
+                            style="@style/Widget.Material3.Button.TextButton" />
+
+                    </LinearLayout>
+
+                </com.google.android.material.card.MaterialCardView>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnSyncNow"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Sync Now"
+                        android:textSize="12sp"
+                        android:layout_marginEnd="4dp"
+                        style="@style/Widget.Material3.Button.TonalButton" />
+
+                    <Button
+                        android:id="@+id/btnTestConnection"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Test Link"
+                        android:textSize="12sp"
+                        android:layout_marginEnd="4dp"
+                        style="@style/Widget.Material3.Button.OutlinedButton" />
+
+                    <Button
+                        android:id="@+id/btnConfigGateway"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Configure"
+                        android:textSize="12sp"
+                        style="@style/Widget.Material3.Button.OutlinedButton" />
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Local API Server Card (Legacy) -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/localApiCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:visibility="gone"
+            app:cardCornerRadius="8dp"
+            app:cardElevation="3dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="14dp">
 
                 <TextView
                     android:id="@+id/serverStatusText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Server Status: Stopped"
-                    android:textSize="16sp"
-                    android:layout_marginBottom="8dp" />
+                    android:textSize="15sp"
+                    android:layout_marginBottom="6dp" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/serverToggle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Enable API Server"
-                    android:layout_marginBottom="16dp" />
+                    android:text="Enable Local API Server"
+                    android:layout_marginBottom="10dp" />
 
                 <TextView
                     android:id="@+id/apiKeyText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="API Key: Loading..."
-                    android:textSize="14sp"
+                    android:textSize="13sp"
                     android:background="?android:attr/selectableItemBackground"
-                    android:padding="8dp"
-                    android:layout_marginBottom="8dp" />
+                    android:padding="6dp"
+                    android:layout_marginBottom="4dp" />
 
                 <TextView
                     android:id="@+id/portText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Port: 8080"
-                    android:textSize="14sp"
+                    android:textSize="13sp"
                     android:background="?android:attr/selectableItemBackground"
-                    android:padding="8dp"
-                    android:layout_marginBottom="16dp" />
+                    android:padding="6dp"
+                    android:layout_marginBottom="8dp" />
 
                 <TextView
                     android:id="@+id/apiUrlsText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="API URLs: Loading..."
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:background="?android:attr/selectableItemBackground"
-                    android:padding="8dp"
+                    android:padding="6dp"
                     android:layout_marginBottom="8dp"
                     android:fontFamily="monospace" />
 
@@ -92,8 +269,9 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:layout_marginEnd="8dp"
-                        android:text="Test API"
+                        android:layout_marginEnd="6dp"
+                        android:text="Test Local API"
+                        android:textSize="12sp"
                         style="@style/Widget.Material3.Button.OutlinedButton" />
 
                     <Button
@@ -101,8 +279,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:layout_marginStart="8dp"
-                        android:text="Setup External Domain"
+                        android:text="External Domain"
                         android:textSize="12sp"
                         style="@style/Widget.Material3.Button.OutlinedButton" />
 
@@ -118,7 +295,7 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             app:cardCornerRadius="8dp"
-            app:cardElevation="4dp">
+            app:cardElevation="3dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -128,10 +305,10 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="SMS History"
-                    android:textSize="18sp"
+                    android:text="SMS Dispatch History"
+                    android:textSize="16sp"
                     android:textStyle="bold"
-                    android:padding="16dp"
+                    android:padding="12dp"
                     android:background="?attr/colorPrimary"
                     android:textColor="?attr/colorOnPrimary" />
 
