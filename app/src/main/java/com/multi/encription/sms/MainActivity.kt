@@ -1,8 +1,8 @@
 package com.multi.encription.sms
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
 import android.widget.*
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AlertDialog
@@ -12,15 +12,26 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.switchmaterial.SwitchMaterial
+import com.google.android.material.textfield.TextInputEditText
 import com.multi.encription.sms.core.SmsManager
 import com.multi.encription.sms.database.SmsDatabase
+import com.multi.encription.sms.database.SmsEntity
+import com.multi.encription.sms.models.GatewayMode
+import com.multi.encription.sms.network.ApiResult
+import com.multi.encription.sms.network.GlobalGatewayApiClient
 import com.multi.encription.sms.service.SmsGatewayService
 import com.multi.encription.sms.ui.SmsHistoryAdapter
 import com.multi.encription.sms.utils.ConfigManager
 import com.multi.encription.sms.utils.PermissionHelper
+import com.multi.encription.sms.worker.BackendConnectionStatus
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,8 +39,31 @@ class MainActivity : AppCompatActivity() {
     private lateinit var smsManager: SmsManager
     private lateinit var database: SmsDatabase
     private lateinit var smsHistoryAdapter: SmsHistoryAdapter
+    private lateinit var apiClient: GlobalGatewayApiClient
 
-    // UI Components
+    // Mode Selection UI
+    private lateinit var modeToggleGroup: MaterialButtonToggleGroup
+    private lateinit var globalWorkerCard: MaterialCardView
+    private lateinit var localApiCard: MaterialCardView
+
+    // Global Worker Dashboard UI
+    private lateinit var workerToggle: SwitchMaterial
+    private lateinit var workerBackendStatusText: TextView
+    private lateinit var workerSimStatusText: TextView
+    private lateinit var workerLastSyncText: TextView
+    private lateinit var workerLastJobText: TextView
+    private lateinit var btnSyncNow: Button
+    private lateinit var btnTestConnection: Button
+    private lateinit var btnConfigGateway: Button
+
+    // Diagnostics UI
+    private lateinit var diagnosticsCard: MaterialCardView
+    private lateinit var diagnosticsTitleText: TextView
+    private lateinit var diagnosticsDetailText: TextView
+    private lateinit var btnCopyDiagnostics: Button
+    private var lastRecordedDiagnostics: String? = null
+
+    // Local API UI (Legacy)
     private lateinit var serverStatusText: TextView
     private lateinit var serverToggle: SwitchMaterial
     private lateinit var apiKeyText: TextView
@@ -37,6 +71,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apiUrlsText: TextView
     private lateinit var testApiButton: Button
     private lateinit var externalDomainButton: Button
+
+    // Shared UI
     private lateinit var smsHistoryRecyclerView: RecyclerView
     private lateinit var sendSmsFab: FloatingActionButton
 
@@ -53,6 +89,7 @@ class MainActivity : AppCompatActivity() {
 
         initializeComponents()
         setupUI()
+        observeWorkerState()
         checkPermissions()
     }
 
@@ -60,8 +97,40 @@ class MainActivity : AppCompatActivity() {
         configManager = ConfigManager(this)
         smsManager = SmsManager(this)
         database = SmsDatabase.getDatabase(this)
+        apiClient = GlobalGatewayApiClient(configManager)
 
-        // Initialize UI components
+        // Mode views
+        modeToggleGroup = findViewById(R.id.modeToggleGroup)
+        globalWorkerCard = findViewById(R.id.globalWorkerCard)
+        localApiCard = findViewById(R.id.localApiCard)
+
+        // Global Worker views
+        workerToggle = findViewById(R.id.workerToggle)
+        workerBackendStatusText = findViewById(R.id.workerBackendStatusText)
+        workerSimStatusText = findViewById(R.id.workerSimStatusText)
+        workerLastSyncText = findViewById(R.id.workerLastSyncText)
+        workerLastJobText = findViewById(R.id.workerLastJobText)
+        btnSyncNow = findViewById(R.id.btnSyncNow)
+        btnTestConnection = findViewById(R.id.btnTestConnection)
+        btnConfigGateway = findViewById(R.id.btnConfigGateway)
+
+        // Diagnostics views
+        diagnosticsCard = findViewById(R.id.diagnosticsCard)
+        diagnosticsTitleText = findViewById(R.id.diagnosticsTitleText)
+        diagnosticsDetailText = findViewById(R.id.diagnosticsDetailText)
+        btnCopyDiagnostics = findViewById(R.id.btnCopyDiagnostics)
+
+        btnCopyDiagnostics.setOnClickListener {
+            val diag = lastRecordedDiagnostics
+            if (!diag.isNullOrBlank()) {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("SMS Diagnostics", diag)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, "Diagnostics copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Local API views
         serverStatusText = findViewById(R.id.serverStatusText)
         serverToggle = findViewById(R.id.serverToggle)
         apiKeyText = findViewById(R.id.apiKeyText)
@@ -69,6 +138,8 @@ class MainActivity : AppCompatActivity() {
         apiUrlsText = findViewById(R.id.apiUrlsText)
         testApiButton = findViewById(R.id.testApiButton)
         externalDomainButton = findViewById(R.id.externalDomainButton)
+
+        // History and FAB
         smsHistoryRecyclerView = findViewById(R.id.smsHistoryRecyclerView)
         sendSmsFab = findViewById(R.id.sendSmsFab)
     }
@@ -76,7 +147,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupUI() {
         // Setup RecyclerView
         smsHistoryAdapter = SmsHistoryAdapter { sms ->
-            // Handle SMS item click - show details
             showSmsDetails(sms)
         }
 
@@ -85,50 +155,249 @@ class MainActivity : AppCompatActivity() {
             adapter = smsHistoryAdapter
         }
 
-        // Observe SMS history
         database.smsDao().getAllSmsLiveData().observe(this) { smsList ->
             smsHistoryAdapter.submitList(smsList)
+            updateLatestDiagnostics(smsList)
         }
 
-        // Setup server toggle
+        // Setup Mode Toggle
+        if (configManager.gatewayMode == GatewayMode.GLOBAL_WORKER) {
+            modeToggleGroup.check(R.id.btnModeGlobal)
+            showGlobalWorkerCard()
+        } else {
+            modeToggleGroup.check(R.id.btnModeLocal)
+            showLocalApiCard()
+        }
+
+        modeToggleGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                when (checkedId) {
+                    R.id.btnModeGlobal -> {
+                        configManager.gatewayMode = GatewayMode.GLOBAL_WORKER
+                        showGlobalWorkerCard()
+                        SmsGatewayService.instance?.applyCurrentMode()
+                    }
+                    R.id.btnModeLocal -> {
+                        configManager.gatewayMode = GatewayMode.LOCAL_API
+                        showLocalApiCard()
+                        SmsGatewayService.instance?.applyCurrentMode()
+                    }
+                }
+            }
+        }
+
+        // Global Worker Toggle
+        workerToggle.isChecked = configManager.isWorkerEnabled
+        workerToggle.setOnCheckedChangeListener { _, isChecked ->
+            configManager.isWorkerEnabled = isChecked
+            if (isChecked) {
+                SmsGatewayService.startService(this)
+            } else {
+                SmsGatewayService.instance?.applyCurrentMode()
+            }
+        }
+
+        btnSyncNow.setOnClickListener {
+            val worker = SmsGatewayService.instance?.getGlobalWorker()
+            if (worker != null) {
+                worker.syncNow()
+                Toast.makeText(this, "Manual sync triggered", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Enable Global Worker first", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnTestConnection.setOnClickListener {
+            runConnectionTest()
+        }
+
+        btnConfigGateway.setOnClickListener {
+            showGlobalGatewayConfigDialog()
+        }
+
+        // Local Server Toggle
         serverToggle.isChecked = configManager.isServerEnabled
         serverToggle.setOnCheckedChangeListener { _, isChecked ->
             configManager.isServerEnabled = isChecked
             if (isChecked) {
                 SmsGatewayService.startService(this)
             } else {
-                SmsGatewayService.stopService(this)
+                SmsGatewayService.instance?.applyCurrentMode()
             }
-            updateServerStatus()
+            updateLocalServerStatus()
             updateApiUrls()
         }
 
-        // Setup FAB for sending SMS
+        // Setup FAB for manual SMS testing
         sendSmsFab.setOnClickListener {
             showSendSmsDialog()
         }
 
-        // Setup API key display
-        updateApiKeyDisplay()
-
-        // Setup port display
-        updatePortDisplay()
-
-        // Setup click listeners for configuration
+        // Setup Legacy Click Listeners
         apiKeyText.setOnClickListener { showApiKeyDialog() }
         portText.setOnClickListener { showPortDialog() }
         apiUrlsText.setOnClickListener { showApiUrlsDialog() }
-
-        // Setup test API button
         testApiButton.setOnClickListener { showTestApiDialog() }
-
-        // Setup external domain button
         externalDomainButton.setOnClickListener { showExternalDomainDialog() }
 
-        // Update displays
-        updateServerStatus()
+        updateLocalServerStatus()
+        updateApiKeyDisplay()
+        updatePortDisplay()
         updateApiUrls()
         updateExternalDomainButton()
+    }
+
+    private fun showGlobalWorkerCard() {
+        globalWorkerCard.visibility = View.VISIBLE
+        localApiCard.visibility = View.GONE
+    }
+
+    private fun showLocalApiCard() {
+        globalWorkerCard.visibility = View.GONE
+        localApiCard.visibility = View.VISIBLE
+    }
+
+    private fun observeWorkerState() {
+        lifecycleScope.launch {
+            val worker = SmsGatewayService.instance?.getGlobalWorker()
+            worker?.uiState?.collectLatest { state ->
+                updateWorkerDashboard(state)
+            }
+        }
+    }
+
+    private fun updateWorkerDashboard(state: com.multi.encription.sms.worker.WorkerUiState) {
+        val backendStatusStr = when (state.backendStatus) {
+            BackendConnectionStatus.CONNECTED -> "🟢 Connected (${configManager.globalBackendUrl})"
+            BackendConnectionStatus.AUTH_ERROR -> "🔴 Authentication Error (Invalid Key)"
+            BackendConnectionStatus.OFFLINE -> "🟠 Offline / Unreachable"
+            BackendConnectionStatus.SERVER_ERROR -> "🔴 Server Error"
+            BackendConnectionStatus.UNKNOWN -> "⚪ Status: ${state.statusMessage}"
+        }
+        workerBackendStatusText.text = backendStatusStr
+
+        workerSimStatusText.text = "SIM Status: ${state.simStatus}"
+
+        val lastSyncStr = if (state.lastSyncTimestamp > 0) {
+            val dateStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(state.lastSyncTimestamp))
+            "Last Sync: $dateStr (${state.statusMessage})"
+        } else {
+            "Last Sync: Never (${state.statusMessage})"
+        }
+        workerLastSyncText.text = lastSyncStr
+
+        val lastJobStr = if (state.lastClaimedJobId != null) {
+            "Last Job: ${state.lastClaimedJobId.take(12)}... | Status: ${state.lastSmsStatus ?: "IDLE"}"
+        } else {
+            "Last Job: None | Status: ${state.statusMessage}"
+        }
+        workerLastJobText.text = lastJobStr
+    }
+
+    private fun runConnectionTest() {
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("Testing Connection")
+            .setMessage("Contacting backend at ${configManager.globalBackendUrl}...")
+            .setCancelable(false)
+            .create()
+
+        progressDialog.show()
+
+        lifecycleScope.launch {
+            val healthRes = apiClient.checkHealth()
+            val claimRes = apiClient.claimJobs(limit = 1, leaseSeconds = 30)
+
+            progressDialog.dismiss()
+
+            val sb = StringBuilder()
+            sb.append("🌐 Backend URL:\n${configManager.globalBackendUrl}\n\n")
+
+            // Health Status
+            when (healthRes) {
+                is ApiResult.Success -> {
+                    val h = healthRes.data
+                    sb.append("✅ Health Check: HTTP 200 OK\n")
+                    sb.append("• Platform Status: ${h.status}\n")
+                    sb.append("• Database: ${h.services?.database ?: "connected"}\n")
+                    sb.append("• Active Gateways: ${h.services?.activeGateways ?: 0}\n\n")
+                }
+                is ApiResult.HttpError -> {
+                    sb.append("❌ Health Check Failed: HTTP ${healthRes.statusCode}\n\n")
+                }
+                is ApiResult.NetworkError -> {
+                    sb.append("❌ Network Error: ${healthRes.message}\n\n")
+                }
+                is ApiResult.AuthError -> {
+                    sb.append("❌ Health Probe Auth Error: ${healthRes.message}\n\n")
+                }
+            }
+
+            // Gateway Authentication Status
+            when (claimRes) {
+                is ApiResult.Success -> {
+                    sb.append("✅ Gateway Authentication: SUCCESS\n")
+                    sb.append("• Masked Key: ${configManager.secureStorage.getMaskedGatewayKey()}\n")
+                    sb.append("• Queue Status: Accessible (Jobs in batch: ${claimRes.data.size})\n")
+                }
+                is ApiResult.AuthError -> {
+                    sb.append("❌ Gateway Authentication: FAILED\n")
+                    sb.append("• Error: ${claimRes.message}\n")
+                    sb.append("• Please re-enter or replace your Gateway API Key.\n")
+                }
+                is ApiResult.HttpError -> {
+                    sb.append("⚠️ Gateway Queue Probe HTTP ${claimRes.statusCode}: ${claimRes.message}\n")
+                }
+                is ApiResult.NetworkError -> {
+                    sb.append("❌ Gateway Queue Network Error: ${claimRes.message}\n")
+                }
+            }
+
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Connection Test Results")
+                .setMessage(sb.toString())
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    private fun showGlobalGatewayConfigDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_global_gateway_config, null)
+        val backendUrlEditText = dialogView.findViewById<TextInputEditText>(R.id.backendUrlEditText)
+        val gatewayKeyEditText = dialogView.findViewById<TextInputEditText>(R.id.gatewayKeyEditText)
+        val currentKeyMaskedText = dialogView.findViewById<TextView>(R.id.currentKeyMaskedText)
+
+        backendUrlEditText.setText(configManager.globalBackendUrl)
+        currentKeyMaskedText.text = "Current Key: ${configManager.secureStorage.getMaskedGatewayKey()}"
+
+        AlertDialog.Builder(this)
+            .setTitle("Configure Global Gateway")
+            .setView(dialogView)
+            .setPositiveButton("Save") { _, _ ->
+                val newUrl = backendUrlEditText.text?.toString()?.trim() ?: ""
+                val newKey = gatewayKeyEditText.text?.toString()?.trim() ?: ""
+
+                if (newUrl.isNotBlank()) {
+                    configManager.globalBackendUrl = newUrl
+                }
+
+                if (newKey.isNotBlank()) {
+                    if (newKey.startsWith("otp_gw_")) {
+                        configManager.secureStorage.saveGatewayKey(newKey)
+                        Toast.makeText(this, "Gateway key saved securely", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, "Warning: Key format should be otp_gw_...", Toast.LENGTH_LONG).show()
+                        configManager.secureStorage.saveGatewayKey(newKey)
+                    }
+                }
+
+                Toast.makeText(this, "Configuration updated", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Clear Key") { _, _ ->
+                configManager.secureStorage.clearGatewayKey()
+                Toast.makeText(this, "Gateway key cleared", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun checkPermissions() {
@@ -139,18 +408,21 @@ class MainActivity : AppCompatActivity() {
                 PermissionHelper.requestSmsPermissions(this)
             }
         }
+
+        if (!PermissionHelper.hasNotificationPermission(this)) {
+            PermissionHelper.requestNotificationPermission(this)
+        }
     }
 
     private fun showPermissionRationaleDialog() {
         AlertDialog.Builder(this)
             .setTitle("SMS Permissions Required")
-            .setMessage("This app needs SMS permissions to send messages through the device. Please grant the permissions to continue.")
+            .setMessage("This app requires SMS permissions to send messages via your cellular SIM. Please grant permissions to continue.")
             .setPositiveButton("Grant Permissions") { _, _ ->
                 PermissionHelper.requestSmsPermissions(this)
             }
             .setNegativeButton("Cancel") { dialog, _ ->
                 dialog.dismiss()
-                Toast.makeText(this, "SMS permissions are required for the app to function", Toast.LENGTH_LONG).show()
             }
             .show()
     }
@@ -161,7 +433,6 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
         PermissionHelper.handlePermissionResult(
             requestCode = requestCode,
             permissions = permissions,
@@ -170,13 +441,19 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "SMS permissions granted", Toast.LENGTH_SHORT).show()
             },
             onSmsPermissionDenied = {
-                Toast.makeText(this, "SMS permissions denied. App functionality will be limited.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "SMS permissions denied. Cellular dispatch disabled.", Toast.LENGTH_LONG).show()
+            },
+            onNotificationPermissionGranted = {
+                Toast.makeText(this, "Notification permission granted", Toast.LENGTH_SHORT).show()
+            },
+            onNotificationPermissionDenied = {
+                Toast.makeText(this, "Notifications disabled. Foreground service status will not be visible in status bar.", Toast.LENGTH_LONG).show()
             }
         )
     }
 
-    private fun updateServerStatus() {
-        val isRunning = configManager.isServerEnabled
+    private fun updateLocalServerStatus() {
+        val isRunning = configManager.isServerEnabled && configManager.gatewayMode == GatewayMode.LOCAL_API
         serverStatusText.text = if (isRunning) {
             "Server Status: Running on port ${configManager.serverPort}"
         } else {
@@ -206,8 +483,6 @@ class MainActivity : AppCompatActivity() {
             • Check Status: GET $baseUrl/api/status
             • SMS History: GET $baseUrl/api/history
             • Server Info: GET $baseUrl/api/info
-
-            (Tap to view full details)
         """.trimIndent()
 
         apiUrlsText.text = urlsText
@@ -229,9 +504,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } catch (e: Exception) {
-            // Fallback to a common local IP pattern
+            // Fallback
         }
-        return "192.168.1.100" // Fallback IP
+        return "192.168.1.100"
     }
 
     private fun showSendSmsDialog() {
@@ -245,7 +520,7 @@ class MainActivity : AppCompatActivity() {
         val messageEditText = dialogView.findViewById<EditText>(R.id.messageEditText)
 
         AlertDialog.Builder(this)
-            .setTitle("Send SMS")
+            .setTitle("Send Test SMS via SIM")
             .setView(dialogView)
             .setPositiveButton("Send") { _, _ ->
                 val phone = phoneEditText.text.toString().trim()
@@ -267,7 +542,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val result = smsManager.sendSms(phoneNumber, message)
                 if (result.isSuccess) {
-                    Toast.makeText(this@MainActivity, "SMS queued for sending", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "SMS queued for cellular sending", Toast.LENGTH_SHORT).show()
                 } else {
                     val error = result.exceptionOrNull()
                     Toast.makeText(this@MainActivity, "Failed to send SMS: ${error?.message}", Toast.LENGTH_LONG).show()
@@ -278,21 +553,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showSmsDetails(sms: com.multi.encription.sms.database.SmsEntity) {
+    private fun updateLatestDiagnostics(smsList: List<SmsEntity>) {
+        val latestSms = smsList.firstOrNull()
+        if (latestSms != null) {
+            val diag = latestSms.diagnosticInfo
+            if (!diag.isNullOrBlank()) {
+                lastRecordedDiagnostics = diag
+                diagnosticsTitleText.text = "Latest Dispatch Status: ${latestSms.status}"
+                diagnosticsDetailText.text = diag
+                return
+            }
+            if (latestSms.errorMessage != null) {
+                val summary = "Status: ${latestSms.status}\nError: ${latestSms.errorMessage}\nSub ID: ${latestSms.subscriptionId ?: "Default"}\nRadio Error: ${latestSms.radioErrorCode ?: "N/A"}"
+                lastRecordedDiagnostics = summary
+                diagnosticsTitleText.text = "Latest Dispatch Status: ${latestSms.status}"
+                diagnosticsDetailText.text = summary
+                return
+            }
+        }
+        val simDiag = com.multi.encription.sms.telephony.SubscriptionHelper.getSubscriptionDiagnostics(this).toSummaryString()
+        lastRecordedDiagnostics = simDiag
+        diagnosticsTitleText.text = "Modem / SIM Diagnostics"
+        diagnosticsDetailText.text = simDiag
+    }
+
+    private fun showSmsDetails(sms: SmsEntity) {
         val message = """
             Phone: ${sms.phoneNumber}
             Message: ${sms.message}
             Status: ${sms.status}
-            Timestamp: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(sms.timestamp))}
-            ${if (sms.deliveryTimestamp != null) "Delivered: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(sms.deliveryTimestamp))}" else ""}
-            ${if (sms.errorMessage != null) "Error: ${sms.errorMessage}" else ""}
-            ${if (sms.requestId != null) "Request ID: ${sms.requestId}" else ""}
+            Timestamp: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(sms.timestamp))}
+            ${if (sms.deliveryTimestamp != null) "Delivered: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(sms.deliveryTimestamp))}\n" else ""}${if (sms.globalJobId != null) "Global Job ID: ${sms.globalJobId}\n" else ""}${if (sms.subscriptionId != null) "Subscription ID: ${sms.subscriptionId}\n" else ""}${if (sms.radioErrorCode != null) "Radio Error Code: ${sms.radioErrorCode}\n" else ""}${if (sms.errorMessage != null) "Error: ${sms.errorMessage}\n" else ""}${if (sms.diagnosticInfo != null) "\nDiagnostics:\n${sms.diagnosticInfo}\n" else ""}${if (sms.requestId != null) "Request ID: ${sms.requestId}" else ""}
         """.trimIndent()
 
         AlertDialog.Builder(this)
-            .setTitle("SMS Details")
+            .setTitle("SMS Dispatch Details")
             .setMessage(message)
             .setPositiveButton("OK", null)
+            .setNeutralButton("Copy Diagnostics") { _, _ ->
+                val diagText = sms.diagnosticInfo ?: message
+                copyToClipboard("SMS Diagnostics", diagText)
+            }
             .show()
     }
 
@@ -304,13 +605,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("API Key")
-            .setMessage("Current API Key (copy this for API access):")
+            .setTitle("Local API Key")
+            .setMessage("Current Local API Key:")
             .setView(editText)
             .setPositiveButton("Generate New") { _, _ ->
                 val newApiKey = configManager.regenerateApiKey()
                 updateApiKeyDisplay()
-                Toast.makeText(this, "New API key generated", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "New local API key generated", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Close", null)
             .show()
@@ -324,7 +625,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Server Port")
-            .setMessage("Enter the port number for the API server:")
+            .setMessage("Enter the port number for the local API server:")
             .setView(editText)
             .setPositiveButton("Save") { _, _ ->
                 val portText = editText.text.toString()
@@ -335,8 +636,7 @@ class MainActivity : AppCompatActivity() {
                     updatePortDisplay()
                     updateApiUrls()
 
-                    if (configManager.isServerEnabled) {
-                        // Restart server with new port
+                    if (configManager.isServerEnabled && configManager.gatewayMode == GatewayMode.LOCAL_API) {
                         SmsGatewayService.stopService(this)
                         SmsGatewayService.startService(this)
                     }
@@ -357,67 +657,42 @@ class MainActivity : AppCompatActivity() {
         val baseUrl = "http://$deviceIp:$port"
 
         val message = """
-            📡 SMS Gateway API Endpoints
+            📡 Local SMS Gateway API Endpoints
 
             Base URL: $baseUrl
             API Key: $apiKey
 
             🔗 Available Endpoints:
-
-            1. Send SMS:
-            POST $baseUrl/api/send
-            Headers: X-API-Key: $apiKey
-            Body: {"phone_number": "+1234567890", "message": "Hello!"}
-
-            2. Check SMS Status:
-            GET $baseUrl/api/status?sms_id=123
-            Headers: X-API-Key: $apiKey
-
-            3. Get SMS History:
-            GET $baseUrl/api/history?limit=10
-            Headers: X-API-Key: $apiKey
-
-            4. Server Info (No Auth):
-            GET $baseUrl/api/info
-
-            5. Send Bulk SMS:
-            POST $baseUrl/api/send-bulk
-            Headers: X-API-Key: $apiKey
-            Body: {"messages": [{"phone_number": "+1234567890", "message": "Hello!"}]}
-
-            📋 Copy these URLs to use in your applications!
+            • POST $baseUrl/api/send
+            • GET $baseUrl/api/status?sms_id=123
+            • GET $baseUrl/api/history?limit=10
+            • GET $baseUrl/api/info
         """.trimIndent()
 
         AlertDialog.Builder(this)
-            .setTitle("API Endpoints")
+            .setTitle("Local API Endpoints")
             .setMessage(message)
-            .setPositiveButton("Copy Base URL") { _, _ ->
-                copyToClipboard("Base URL", baseUrl)
-            }
-            .setNeutralButton("Copy API Key") { _, _ ->
-                copyToClipboard("API Key", apiKey)
-            }
+            .setPositiveButton("Copy URL", { _, _ -> copyToClipboard("Base URL", baseUrl) })
+            .setNeutralButton("Copy Key", { _, _ -> copyToClipboard("API Key", apiKey) })
             .setNegativeButton("Close", null)
             .show()
     }
 
     private fun showTestApiDialog() {
-        if (!configManager.isServerEnabled) {
-            Toast.makeText(this, "Please enable the API server first", Toast.LENGTH_SHORT).show()
+        if (!configManager.isServerEnabled || configManager.gatewayMode != GatewayMode.LOCAL_API) {
+            Toast.makeText(this, "Please switch to Local API mode and enable server first", Toast.LENGTH_SHORT).show()
             return
         }
 
         val dialogView = layoutInflater.inflate(R.layout.dialog_test_api, null)
         val phoneEditText = dialogView.findViewById<EditText>(R.id.testPhoneEditText)
         val messageEditText = dialogView.findViewById<EditText>(R.id.testMessageEditText)
-        val resultTextView = dialogView.findViewById<TextView>(R.id.testResultTextView)
 
-        // Pre-fill with example data
-        phoneEditText.setText("+1234567890")
-        messageEditText.setText("Test message from SMS Gateway API")
+        phoneEditText.hint = "e.g. +919876543210"
+        messageEditText.setText("Test OTP verification message from Gateway")
 
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Test API - Send SMS")
+        AlertDialog.Builder(this)
+            .setTitle("Test Local API - Send SMS")
             .setView(dialogView)
             .setPositiveButton("Send Test SMS") { _, _ ->
                 val phone = phoneEditText.text.toString().trim()
@@ -428,63 +703,20 @@ class MainActivity : AppCompatActivity() {
                     return@setPositiveButton
                 }
 
-                testApiSendSms(phone, message)
-            }
-            .setNeutralButton("Test Server Info") { _, _ ->
-                testApiServerInfo()
+                lifecycleScope.launch {
+                    try {
+                        val result = smsManager.sendSms(phone, message, configManager.apiKey, "test-${System.currentTimeMillis()}")
+                        if (result.isSuccess) {
+                            Toast.makeText(this@MainActivity, "SMS queued for local sending", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "Error: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
             .setNegativeButton("Close", null)
-            .create()
-
-        dialog.show()
-    }
-
-    private fun testApiSendSms(phoneNumber: String, message: String) {
-        lifecycleScope.launch {
-            try {
-                val result = smsManager.sendSms(phoneNumber, message, configManager.apiKey, "test-${System.currentTimeMillis()}")
-                if (result.isSuccess) {
-                    val smsId = result.getOrThrow()
-                    showTestResult("✅ SMS Test Successful", """
-                        SMS queued for sending!
-
-                        SMS ID: $smsId
-                        Phone: $phoneNumber
-                        Message: $message
-
-                        Check the SMS History below to see delivery status.
-                    """.trimIndent())
-                } else {
-                    val error = result.exceptionOrNull()
-                    showTestResult("❌ SMS Test Failed", "Error: ${error?.message}")
-                }
-            } catch (e: Exception) {
-                showTestResult("❌ SMS Test Failed", "Exception: ${e.message}")
-            }
-        }
-    }
-
-    private fun testApiServerInfo() {
-        val deviceIp = getDeviceIpAddress()
-        val port = configManager.serverPort
-        val infoUrl = "http://$deviceIp:$port/api/info"
-
-        showTestResult("📡 Server Info Test", """
-            Test this URL in your browser or API client:
-
-            $infoUrl
-
-            This endpoint doesn't require authentication and should return server information in JSON format.
-
-            If you can access this URL, your API server is working correctly!
-        """.trimIndent())
-    }
-
-    private fun showTestResult(title: String, message: String) {
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton("OK", null)
             .show()
     }
 
@@ -497,7 +729,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateExternalDomainButton() {
         val buttonText = if (configManager.useExternalDomain) {
-            "External Domain: ${configManager.externalDomain}"
+            "External: ${configManager.externalDomain}"
         } else {
             "Setup External Domain"
         }
@@ -508,95 +740,24 @@ class MainActivity : AppCompatActivity() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_external_domain, null)
         val domainEditText = dialogView.findViewById<EditText>(R.id.domainEditText)
         val enableSwitch = dialogView.findViewById<Switch>(R.id.enableExternalDomainSwitch)
-        val instructionsText = dialogView.findViewById<TextView>(R.id.instructionsText)
 
-        // Pre-fill current values
         domainEditText.setText(configManager.externalDomain)
         enableSwitch.isChecked = configManager.useExternalDomain
 
-        instructionsText.text = """
-            To use a custom domain:
-
-            1. Set up a reverse proxy (VPS + Nginx)
-            2. Point your domain to the proxy server
-            3. Configure proxy to forward to: ${getDeviceIpAddress()}:${configManager.serverPort}
-            4. Enter your domain below (e.g., sms.yourdomain.com)
-
-            See CUSTOM_DOMAIN_SETUP.md for detailed instructions.
-        """.trimIndent()
-
         AlertDialog.Builder(this)
-            .setTitle("External Domain Setup")
+            .setTitle("External Domain Setup (Legacy)")
             .setView(dialogView)
             .setPositiveButton("Save") { _, _ ->
                 val domain = domainEditText.text.toString().trim()
                 val enabled = enableSwitch.isChecked
-
-                if (enabled && domain.isBlank()) {
-                    Toast.makeText(this, "Please enter a domain name", Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
 
                 configManager.externalDomain = domain
                 configManager.useExternalDomain = enabled
 
                 updateApiUrls()
                 updateExternalDomainButton()
-
-                val message = if (enabled) {
-                    "External domain enabled: $domain"
-                } else {
-                    "Using local network access"
-                }
-                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-            }
-            .setNeutralButton("View Setup Guide") { _, _ ->
-                showExternalDomainSetupGuide()
             }
             .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showExternalDomainSetupGuide() {
-        val deviceIp = getDeviceIpAddress()
-        val port = configManager.serverPort
-
-        val guide = """
-            🌐 External Domain Setup Guide
-
-            Your Android device: $deviceIp:$port
-
-            📋 Quick Setup Options:
-
-            1. VPS + Nginx (Recommended)
-            • Get a VPS (DigitalOcean, Linode, etc.)
-            • Install Nginx
-            • Configure reverse proxy to $deviceIp:$port
-            • Get SSL certificate (Let's Encrypt)
-
-            2. Cloudflare Tunnel (Free)
-            • Install cloudflared on any server
-            • Create tunnel to $deviceIp:$port
-            • Zero configuration needed
-
-            3. Dynamic DNS + Port Forwarding
-            • Configure router port forwarding
-            • Use DuckDNS or No-IP for dynamic DNS
-            • Forward port $port to $deviceIp
-
-            📖 See CUSTOM_DOMAIN_SETUP.md for detailed instructions.
-
-            ⚠️ Security Notes:
-            • Use strong API keys
-            • Enable rate limiting
-            • Monitor access logs
-            • Consider IP whitelisting
-        """.trimIndent()
-
-        AlertDialog.Builder(this)
-            .setTitle("Setup Guide")
-            .setMessage(guide)
-            .setPositiveButton("OK", null)
             .show()
     }
 }

@@ -1,13 +1,14 @@
 package com.multi.encription.sms.core
 
-import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.telephony.SmsManager as AndroidSmsManager
 import android.util.Log
 import com.multi.encription.sms.database.SmsDatabase
 import com.multi.encription.sms.database.SmsStatus
+import com.multi.encription.sms.network.GlobalGatewayApiClient
+import com.multi.encription.sms.telephony.SmsErrorDecoder
+import com.multi.encription.sms.utils.ConfigManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -19,70 +20,134 @@ class SmsStatusReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        val smsId = intent.getLongExtra(com.multi.encription.sms.core.SmsManager.EXTRA_SMS_ID, -1L)
+        val capturedResultCode = resultCode
+        val smsId = intent.getLongExtra(SmsManager.EXTRA_SMS_ID, -1L)
+        val globalJobIdExtra = intent.getStringExtra(SmsManager.EXTRA_GLOBAL_JOB_ID)
+
         if (smsId == -1L) {
-            Log.w(TAG, "Received SMS status without valid SMS ID")
+            Log.w(TAG, "Received SMS status callback without valid SMS ID")
             return
         }
-        
+
+        // Read diagnostic extras populated by telephony stack
+        val noDefault = intent.getBooleanExtra("noDefault", false)
+        val rawErrorCode = intent.getIntExtra("errorCode", -1).let {
+            if (it == -1) intent.getIntExtra("android.telephony.extra.ERROR_CODE", -1) else it
+        }
+        val radioErrorCode = if (rawErrorCode != -1) rawErrorCode else null
+        val subIdExtra = intent.getIntExtra(SmsManager.EXTRA_SUB_ID, -1).let {
+            if (it != -1) it else null
+        }
+
         val database = SmsDatabase.getDatabase(context)
         val smsDao = database.smsDao()
-        val smsManager = com.multi.encription.sms.core.SmsManager(context)
+        val smsManager = SmsManager(context)
+        val configManager = ConfigManager(context)
+        val apiClient = GlobalGatewayApiClient(configManager)
+
+        val pendingResult = goAsync()
 
         CoroutineScope(Dispatchers.IO).launch {
-            when (intent.action) {
-                com.multi.encription.sms.core.SmsManager.SMS_SENT_ACTION -> {
-                    handleSmsSent(resultCode, smsId, smsManager)
+            try {
+                // Fetch the SMS entity to ensure we have the correct global job ID
+                val entity = smsDao.getSmsById(smsId)
+                val targetGlobalJobId = globalJobIdExtra ?: entity?.globalJobId
+
+                when (intent.action) {
+                    SmsManager.SMS_SENT_ACTION -> {
+                        handleSmsSent(
+                            resultCode = capturedResultCode,
+                            smsId = smsId,
+                            globalJobId = targetGlobalJobId,
+                            noDefault = noDefault,
+                            radioErrorCode = radioErrorCode,
+                            subscriptionId = subIdExtra ?: entity?.subscriptionId,
+                            smsManager = smsManager,
+                            apiClient = apiClient
+                        )
+                    }
+                    SmsManager.SMS_DELIVERED_ACTION -> {
+                        handleSmsDelivered(smsId, targetGlobalJobId, smsManager, apiClient)
+                    }
                 }
-                com.multi.encription.sms.core.SmsManager.SMS_DELIVERED_ACTION -> {
-                    handleSmsDelivered(smsId, smsManager)
-                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error handling SMS status receiver callback", e)
+            } finally {
+                pendingResult.finish()
             }
         }
     }
-    
-    private suspend fun handleSmsSent(resultCode: Int, smsId: Long, smsManager: com.multi.encription.sms.core.SmsManager) {
-        val status: SmsStatus
-        val errorMessage: String?
 
-        when (resultCode) {
-            Activity.RESULT_OK -> {
-                status = SmsStatus.SENT
-                errorMessage = null
-                Log.d(TAG, "SMS sent successfully: ID=$smsId")
-            }
-            AndroidSmsManager.RESULT_ERROR_GENERIC_FAILURE -> {
-                status = SmsStatus.FAILED
-                errorMessage = "Generic failure"
-                Log.e(TAG, "SMS failed - Generic failure: ID=$smsId")
-            }
-            AndroidSmsManager.RESULT_ERROR_NO_SERVICE -> {
-                status = SmsStatus.FAILED
-                errorMessage = "No service"
-                Log.e(TAG, "SMS failed - No service: ID=$smsId")
-            }
-            AndroidSmsManager.RESULT_ERROR_NULL_PDU -> {
-                status = SmsStatus.FAILED
-                errorMessage = "Null PDU"
-                Log.e(TAG, "SMS failed - Null PDU: ID=$smsId")
-            }
-            AndroidSmsManager.RESULT_ERROR_RADIO_OFF -> {
-                status = SmsStatus.FAILED
-                errorMessage = "Radio off"
-                Log.e(TAG, "SMS failed - Radio off: ID=$smsId")
-            }
-            else -> {
-                status = SmsStatus.FAILED
-                errorMessage = "Unknown error (code: $resultCode)"
-                Log.e(TAG, "SMS failed - Unknown error: ID=$smsId, Code=$resultCode")
-            }
+    private suspend fun handleSmsSent(
+        resultCode: Int,
+        smsId: Long,
+        globalJobId: String?,
+        noDefault: Boolean,
+        radioErrorCode: Int?,
+        subscriptionId: Int?,
+        smsManager: SmsManager,
+        apiClient: GlobalGatewayApiClient
+    ) {
+        val decoded = SmsErrorDecoder.decode(
+            resultCode = resultCode,
+            radioErrorCode = radioErrorCode,
+            noDefault = noDefault,
+            subscriptionId = subscriptionId
+        )
+
+        val status = if (decoded.isSuccess) SmsStatus.SENT else SmsStatus.FAILED
+        val diagnosticString = decoded.toSanitizedDiagnosticString()
+
+        Log.i(TAG, "SMS Sent Status Callback [SMS ID: $smsId, GlobalJobId: $globalJobId]:\n$diagnosticString")
+
+        if (decoded.isRateLimited) {
+            Log.w(TAG, "Android SMS sending rate limit condition detected: ${decoded.decodedReason}")
         }
 
-        smsManager.updateSmsStatus(smsId, status, errorMessage)
+        // 1. Update local Room database with detailed diagnostics
+        smsManager.updateSmsStatus(
+            smsId = smsId,
+            status = status,
+            errorMessage = if (decoded.isSuccess) null else decoded.decodedReason,
+            subscriptionId = subscriptionId,
+            radioErrorCode = radioErrorCode,
+            diagnosticInfo = diagnosticString
+        )
+
+        // 2. Report status callback back to cloud queue if associated with a global job
+        if (!globalJobId.isNullOrBlank()) {
+            if (decoded.isSuccess) {
+                apiClient.updateJobStatus(globalJobId, "SENT")
+            } else {
+                val formattedBackendMsg = if (radioErrorCode != null && radioErrorCode > 0) {
+                    "${decoded.decodedReason} (Radio: $radioErrorCode)"
+                } else {
+                    decoded.decodedReason
+                }
+                apiClient.updateJobStatus(
+                    jobId = globalJobId,
+                    status = "FAILED",
+                    errorCode = decoded.errorName,
+                    errorMessage = formattedBackendMsg
+                )
+            }
+        }
     }
 
-    private suspend fun handleSmsDelivered(smsId: Long, smsManager: com.multi.encription.sms.core.SmsManager) {
-        Log.d(TAG, "SMS delivered: ID=$smsId")
+    private suspend fun handleSmsDelivered(
+        smsId: Long,
+        globalJobId: String?,
+        smsManager: SmsManager,
+        apiClient: GlobalGatewayApiClient
+    ) {
+        Log.d(TAG, "SMS delivery receipt received: ID=$smsId, GlobalJobId=$globalJobId")
+
+        // 1. Update local database
         smsManager.updateSmsStatus(smsId, SmsStatus.DELIVERED)
+
+        // 2. Report delivery acknowledgment back to cloud queue
+        if (!globalJobId.isNullOrBlank()) {
+            apiClient.updateJobStatus(globalJobId, "DELIVERED")
+        }
     }
 }

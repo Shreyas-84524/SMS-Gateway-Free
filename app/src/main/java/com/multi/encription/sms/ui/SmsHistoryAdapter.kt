@@ -69,6 +69,7 @@ class SmsHistoryAdapter(
         private fun getStatusColor(status: SmsStatus): Int {
             return when (status) {
                 SmsStatus.PENDING -> Color.parseColor("#FF9800") // Orange
+                SmsStatus.SENDING -> Color.parseColor("#00BCD4") // Cyan
                 SmsStatus.SENT -> Color.parseColor("#2196F3") // Blue
                 SmsStatus.DELIVERED -> Color.parseColor("#4CAF50") // Green
                 SmsStatus.FAILED -> Color.parseColor("#F44336") // Red
