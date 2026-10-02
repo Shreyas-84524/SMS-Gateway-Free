@@ -21,6 +21,14 @@ export class AdminService {
     return result.rows[0];
   }
 
+  public static async setProjectEnabled(projectId: string, enabled: boolean): Promise<boolean> {
+    const result = await db.query(
+      `UPDATE projects SET enabled = $2, updated_at = NOW() WHERE id = $1`,
+      [projectId, enabled]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   /**
    * Generates a new Project API Key.
    * Returns plaintext key ONCE.
@@ -76,6 +84,14 @@ export class AdminService {
     );
 
     return result.rows[0];
+  }
+
+  public static async setGatewayActive(gatewayId: string, active: boolean): Promise<boolean> {
+    const result = await db.query(
+      `UPDATE gateways SET is_active = $2, worker_enabled = $2 WHERE id = $1`,
+      [gatewayId, active]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   /**

@@ -8,3 +8,11 @@
 .externalNativeBuild
 .cxx
 local.properties
+backend/node_modules/
+backend/.next/
+backend/.vercel/
+backend/.env*
+!backend/.env.example
+backend/tsconfig.tsbuildinfo
+*.db
+sms_database
