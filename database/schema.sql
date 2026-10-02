@@ -56,7 +56,28 @@ CREATE TABLE IF NOT EXISTS gateway_api_keys (
     revoked_at TIMESTAMPTZ NULL
 );
 
--- 5. OTP Challenges Table
+-- 5. Private administrator accounts. Slots enforce a maximum of two users.
+CREATE TABLE IF NOT EXISTS admin_users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    slot SMALLINT NOT NULL UNIQUE CHECK (slot IN (1, 2)),
+    phone_number VARCHAR(20) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ NULL
+);
+
+-- Login attempts are retained briefly for database-backed throttling.
+CREATE TABLE IF NOT EXISTS admin_login_attempts (
+    id BIGSERIAL PRIMARY KEY,
+    identity_hash VARCHAR(64) NOT NULL,
+    succeeded BOOLEAN NOT NULL DEFAULT FALSE,
+    attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 6. OTP Challenges Table
 CREATE TABLE IF NOT EXISTS otp_challenges (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
@@ -72,7 +93,7 @@ CREATE TABLE IF NOT EXISTS otp_challenges (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 6. SMS Jobs Table
+-- 7. SMS Jobs Table
 CREATE TABLE IF NOT EXISTS sms_jobs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
@@ -99,4 +120,5 @@ CREATE INDEX IF NOT EXISTS idx_gateway_api_keys_hash ON gateway_api_keys (key_ha
 CREATE INDEX IF NOT EXISTS idx_otp_challenges_verify ON otp_challenges (id, consumed, expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_otp_challenges_idempotency ON otp_challenges (project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sms_jobs_phone ON sms_jobs (phone_number, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_login_attempts_recent ON admin_login_attempts (identity_hash, attempted_at DESC);
 
