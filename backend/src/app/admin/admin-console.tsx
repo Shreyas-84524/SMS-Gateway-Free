@@ -158,7 +158,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
         <h1>Welcome back</h1>
         <p className="auth-copy">Sign in with one of the two authorized accounts.</p>
         <form onSubmit={submit} className="stack">
-          <label>Phone number<input name="phone" type="tel" autoComplete="tel" required autoFocus /></label>
+          <label>Phone number<input name="phone" type="tel" placeholder="9869789060 or +919869789060" autoComplete="tel" required autoFocus /></label>
           <label>Password<input name="password" type="password" autoComplete="current-password" required /></label>
           {error && <p className="error" role="alert">{error}</p>}
           <button className="button primary wide" disabled={busy}>{busy ? 'Signing in...' : 'Sign in'}</button>

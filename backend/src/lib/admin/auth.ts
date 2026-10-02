@@ -31,7 +31,8 @@ interface SessionPayload {
 
 export function normalizeAdminPhone(value: string): string | null {
   const compact = value.trim().replace(/[\s()-]/g, '');
-  const normalized = compact.startsWith('+') ? compact : `+${compact}`;
+  const digits = compact.startsWith('+') ? compact.slice(1) : compact;
+  const normalized = /^\d{10}$/.test(digits) ? `+91${digits}` : `+${digits}`;
   return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : null;
 }
 
